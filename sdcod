@@ -1,0 +1,264 @@
+#!/usr/bin/env python3
+
+import base64
+import binascii
+import urllib.parse
+import codecs
+import string
+import quopri
+import zlib
+import gzip
+import bz2
+import io
+import argparse
+
+# -- Helper Functions --
+
+def is_printable(s):
+    return all(c in string.printable or c=='\n' for c in s)
+
+def try_decode(func, s):
+    try:
+        result = func(s)
+        if result and is_printable(result):
+            return result
+    except Exception:
+        return None
+
+# -- Decoders --
+
+def try_base64(s):
+    return try_decode(lambda x: base64.b64decode(x).decode('utf-8'), s)
+
+def try_base64_urlsafe(s):
+    return try_decode(lambda x: base64.urlsafe_b64decode(x).decode('utf-8'), s)
+
+def try_base32(s):
+    return try_decode(lambda x: base64.b32decode(x).decode('utf-8'), s)
+
+def try_base58(s):
+    # Base58 decoding requires external lib, simplified here as placeholder
+    return None
+
+def try_base85(s):
+    return try_decode(lambda x: base64.a85decode(x).decode('utf-8'), s)
+
+def try_hex(s):
+    return try_decode(lambda x: bytes.fromhex(x).decode('utf-8'), s)
+
+def try_url(s):
+    return try_decode(lambda x: urllib.parse.unquote(x), s)
+
+def try_rot13(s):
+    return try_decode(lambda x: codecs.decode(x, 'rot_13'), s)
+
+def try_rot47(s):
+    try:
+        decoded = ''.join([chr(33 + ((ord(c) + 14) % 94)) if 33 <= ord(c) <= 126 else c for c in s])
+        if is_printable(decoded):
+            return decoded
+    except Exception:
+        return None
+
+def try_morse(s):
+    MORSE_CODE_DICT = {
+        '.-': 'A', '-...': 'B', '-.-.': 'C', '-..': 'D', '.': 'E',
+        '..-.': 'F', '--.': 'G', '....': 'H', '..': 'I', '.---': 'J',
+        '-.-': 'K', '.-..': 'L', '--': 'M', '-.': 'N', '---': 'O',
+        '.--.': 'P', '--.-': 'Q', '.-.': 'R', '...': 'S', '-': 'T',
+        '..-': 'U', '...-': 'V', '.--': 'W', '-..-': 'X', '-.--': 'Y',
+        '--..': 'Z', '-----': '0', '.----': '1', '..---': '2', '...--': '3',
+        '....-': '4', '.....': '5', '-....': '6', '--...': '7', '---..': '8',
+        '----.': '9', '/': ' '
+    }
+    try:
+        words = s.strip().split('   ')  # Morse words separated by 3 spaces
+        decoded_words = []
+        for word in words:
+            letters = word.split()
+            decoded_letters = [MORSE_CODE_DICT.get(l, '') for l in letters]
+            decoded_words.append(''.join(decoded_letters))
+        decoded = ' '.join(decoded_words)
+        if is_printable(decoded):
+            return decoded
+    except Exception:
+        return None
+
+def try_quoted_printable(s):
+    return try_decode(lambda x: quopri.decodestring(x).decode('utf-8'), s)
+
+def try_uuencode(s):
+    try:
+        import uu
+        f = io.StringIO(s)
+        output = io.BytesIO()
+        uu.decode(f, output)
+        decoded = output.getvalue().decode('utf-8')
+        if is_printable(decoded):
+            return decoded
+    except Exception:
+        return None
+
+def try_ascii_codes(s):
+    try:
+        parts = s.split()
+        decoded = ''.join(chr(int(p)) for p in parts)
+        if is_printable(decoded):
+            return decoded
+    except Exception:
+        return None
+
+def try_binary(s):
+    try:
+        parts = s.split()
+        decoded = ''.join(chr(int(p, 2)) for p in parts)
+        if is_printable(decoded):
+            return decoded
+    except Exception:
+        return None
+
+def try_caesar(s, shift=3):
+    def shift_char(c):
+        if c.isalpha():
+            base = ord('a') if c.islower() else ord('A')
+            return chr((ord(c) - base - shift) % 26 + base)
+        return c
+    try:
+        decoded = ''.join(shift_char(c) for c in s)
+        if is_printable(decoded):
+            return decoded
+    except Exception:
+        return None
+
+def try_atbash(s):
+    def atbash_char(c):
+        if c.isalpha():
+            base = ord('a') if c.islower() else ord('A')
+            return chr(base + 25 - (ord(c) - base))
+        return c
+    try:
+        decoded = ''.join(atbash_char(c) for c in s)
+        if is_printable(decoded):
+            return decoded
+    except Exception:
+        return None
+
+def try_vigenere(s, key='KEY'):
+    def vigenere_char(c, k):
+        if c.isalpha():
+            base = ord('a') if c.islower() else ord('A')
+            c_pos = ord(c) - base
+            k_pos = ord(k.lower()) - ord('a')
+            return chr((c_pos - k_pos) % 26 + base)
+        return c
+    try:
+        key_len = len(key)
+        decoded = ''.join(vigenere_char(c, key[i % key_len]) for i, c in enumerate(s))
+        if is_printable(decoded):
+            return decoded
+    except Exception:
+        return None
+
+def try_html_entity(s):
+    import html
+    try:
+        decoded = html.unescape(s)
+        if is_printable(decoded):
+            return decoded
+    except Exception:
+        return None
+
+def try_utf_decoding(s):
+    try:
+        decoded = s.encode('latin1').decode('utf-8')
+        if is_printable(decoded):
+            return decoded
+    except Exception:
+        return None
+
+def try_zlib_decompress(s):
+    try:
+        decoded = zlib.decompress(base64.b64decode(s)).decode('utf-8')
+        if is_printable(decoded):
+            return decoded
+    except Exception:
+        return None
+
+def try_gzip_decompress(s):
+    try:
+        decoded = gzip.decompress(base64.b64decode(s)).decode('utf-8')
+        if is_printable(decoded):
+            return decoded
+    except Exception:
+        return None
+
+def try_bz2_decompress(s):
+    try:
+        decoded = bz2.decompress(base64.b64decode(s)).decode('utf-8')
+        if is_printable(decoded):
+            return decoded
+    except Exception:
+        return None
+
+# -- Encoders (examples) --
+
+def encode_base64(s):
+    return base64.b64encode(s.encode()).decode()
+
+def encode_hex(s):
+    return s.encode().hex()
+
+def encode_url(s):
+    return urllib.parse.quote(s)
+
+def encode_rot13(s):
+    return codecs.encode(s, 'rot_13')
+
+def encode_binary(s):
+    return ' '.join(format(ord(c), '08b') for c in s)
+
+# -- Main smart decode --
+
+def smart_decode(s):
+    decoders = {
+        "Base64": try_base64,
+        "Base64 URL Safe": try_base64_urlsafe,
+        "Base32": try_base32,
+        "Base85 (Ascii85)": try_base85,
+        "Hexadecimal": try_hex,
+        "URL Encoding": try_url,
+        "ROT13": try_rot13,
+        "ROT47": try_rot47,
+        "Morse Code": try_morse,
+        "Quoted Printable": try_quoted_printable,
+        "UUencode": try_uuencode,
+        "ASCII Codes": try_ascii_codes,
+        "Binary": try_binary,
+        "Caesar Cipher (shift 3)": try_caesar,
+        "Atbash Cipher": try_atbash,
+        "Vigenère Cipher (key=KEY)": try_vigenere,
+        "HTML Entity Encoding": try_html_entity,
+        "UTF-8 decode": try_utf_decoding,
+        "Zlib decompression (base64 input)": try_zlib_decompress,
+        "Gzip decompression (base64 input)": try_gzip_decompress,
+        "Bz2 decompression (base64 input)": try_bz2_decompress,
+    }
+    results = {}
+    for name, func in decoders.items():
+        result = func(s)
+        if result:
+            results[name] = result
+    return results
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="sdcod - Smart Decoder Tool")
+    parser.add_argument('-d', '--decode', type=str, required=True, help='Encoded string to decode')
+    args = parser.parse_args()
+
+    results = smart_decode(args.decode)
+    if results:
+        print("\nPossible decodings found:\n")
+        for name, decoded in results.items():
+            print(f"[{name}]:\n{decoded}\n{'-'*40}")
+    else:
+        print("No valid decoding found.")
